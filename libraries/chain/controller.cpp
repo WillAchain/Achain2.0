@@ -29,6 +29,7 @@
 #include <fc/log/logger_config.hpp>
 #include <fc/scoped_exit.hpp>
 #include <fc/variant_object.hpp>
+#include <eosio/chain/set_config.hpp>
 
 namespace eosio { namespace chain {
 
@@ -45,6 +46,7 @@ using controller_index_set = index_set<
    transaction_multi_index,
    generated_transaction_multi_index,
    table_id_multi_index,
+   config_data_object_index,
    code_index
 >;
 
@@ -335,6 +337,7 @@ struct controller_impl {
 */
 
    SET_APP_HANDLER( act, act, canceldelay );
+   SET_APP_HANDLER( act, act, setconfig );
    }
 
    /**
@@ -576,6 +579,7 @@ struct controller_impl {
             }
             head = fork_db.head();
          }
+         init_chain_config();
       }
       // At this point head != nullptr && fork_db.head() != nullptr && fork_db.root() != nullptr.
       // Furthermore, fork_db.root()->block_num <= lib_num.
@@ -690,7 +694,28 @@ struct controller_impl {
       thread_pool.stop();
       pending.reset();
    }
+   
+   //add for achain2.0
+   void init_chain_config(){
+      setconfig cfg;
+      //set free_ram_per_account
+      cfg.cfg_name = setconf::res_type::free_ram_per_account;
+      cfg.value = setconf::res_value::free_ram;
+      cfg.valid_block = 1;  //from block 1
+      cfg.key = setconf::default_value::default_config_key;
+      cfg.desc = "every account has 8k ram for free from block 1";
+      set_config( db, cfg );
 
+      //set no_bid
+      cfg.cfg_name = setconf::func_type::no_bid;
+      cfg.value = 0;
+      cfg.valid_block = 10000000;  //till 10000000
+      cfg.key = setconf::default_value::default_config_key;
+      cfg.desc = "account can new other account without bid";
+      set_config( db, cfg );
+
+      return;
+   }
    void add_indices() {
       reversible_blocks.add_index<reversible_block_index>();
 
@@ -904,6 +929,7 @@ struct controller_impl {
       conf.genesis.initial_configuration.validate();
       db.create<global_property_object>([&](auto& gpo ){
          gpo.configuration = conf.genesis.initial_configuration;
+         gpo.proposed_schedule_size = conf._initial_bp_num;
       });
 
       db.create<protocol_state_object>([&](auto& pso ){
@@ -2774,6 +2800,41 @@ int64_t controller::set_proposed_producers( vector<producer_key> producers ) {
    });
    return version;
 }
+
+//add for achainplus
+//set the count of schedule producers
+bool controller::set_proposed_schedule_size( schedule_size_type size )
+{
+   const auto& gpo = get_global_properties();
+
+   if(size < gpo.proposed_schedule_size)
+      return false;
+   
+   my->db.modify( gpo, [&]( auto& gp ) {
+      gp.proposed_schedule_size = size;
+   });
+
+   return true;
+}
+//return the proposed_schedule_size 
+uint32_t controller::get_proposed_schedule_size()
+{
+   const auto& gpo = get_global_properties();
+   
+   if (gpo.proposed_schedule_size.valid()) return *gpo.proposed_schedule_size;
+   return my->conf._initial_bp_num;
+}
+
+bool controller::is_func_open(const account_name& func_type)
+{
+   return eosio::chain::is_func_open(*this, func_type);
+}
+
+int64_t controller::get_chain_config_value(const account_name  &func_type)
+{
+   return eosio::chain::get_config_value(this->db(), func_type);
+}
+
 
 const producer_schedule_type&    controller::active_producers()const {
    if( !(my->pending) )

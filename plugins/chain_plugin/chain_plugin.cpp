@@ -267,6 +267,7 @@ void chain_plugin::set_program_options(options_description& cli, options_descrip
 #ifdef __linux__
          ("database-hugepage-path", bpo::value<vector<string>>()->composing(), "Optional path for database hugepages when in \"locked\" mode (may specify multiple times)")
 #endif
+         ("initial-bp-num", bpo::value<uint32_t>()->default_value(chain::config::initial_schedule_size), "the initail number of block producer")
          ;
 
 // TODO: rate limiting
@@ -1378,8 +1379,8 @@ read_only::get_chain_config_results read_only::get_chain_config(const read_only:
    
    while (iter != cfg.end())
    {
-      chain_config _cfg;
-      _cfg.name = iter->name;
+      chain_config_ex  _cfg;
+      _cfg.cfg_name = iter->cfg_name;
       _cfg.value = iter->value;
       _cfg.valid_block = iter->valid_block;
       _cfg.key = iter->key;

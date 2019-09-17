@@ -1049,24 +1049,39 @@ struct create_account_subcommand {
                   active = public_key_type(active_key_str);
                } EOS_RETHROW_EXCEPTIONS( public_key_type_exception, "Invalid active public key: ${public_key}", ("public_key", active_key_str) );
             }
-
+            
             auto create = create_newaccount(creator, account_name, owner, active);
             if (!simple) {
-               EOSC_ASSERT( buy_ram_eos.size() || buy_ram_bytes_in_kbytes || buy_ram_bytes, "ERROR: One of --buy-ram, --buy-ram-kbytes or --buy-ram-bytes should have non-zero value" );
-               EOSC_ASSERT( !buy_ram_bytes_in_kbytes || !buy_ram_bytes, "ERROR: --buy-ram-kbytes and --buy-ram-bytes cannot be set at the same time" );
-               action buyram = !buy_ram_eos.empty() ? create_buyram(creator, account_name, to_asset(buy_ram_eos))
-                  : create_buyrambytes(creator, account_name, (buy_ram_bytes_in_kbytes) ? (buy_ram_bytes_in_kbytes * 1024) : buy_ram_bytes);
+               EOSC_ASSERT( !buy_ram_bytes_in_kbytes || !buy_ram_bytes, "ERROR: --buy-ram-kbytes and --buy-ram-bytes cannot be set at the same time" );			   
+               if (buy_ram_eos.empty() && buy_ram_bytes_in_kbytes == 0 && buy_ram_bytes == 0)
+                  no_ram = true;
                auto net = to_asset(stake_net);
                auto cpu = to_asset(stake_cpu);
-               if ( net.get_amount() != 0 || cpu.get_amount() != 0 ) {
-                  action delegate = create_delegate( creator, account_name, net, cpu, transfer);
-                  send_actions( { create, buyram, delegate } );
-               } else {
-                  send_actions( { create, buyram } );
+               if (!no_ram)
+               {
+                  action buyram = !buy_ram_eos.empty() ? create_buyram(creator, account_name, to_asset(buy_ram_eos))
+                        : create_buyrambytes(creator, account_name, (buy_ram_bytes_in_kbytes) ? (buy_ram_bytes_in_kbytes * 1024) : buy_ram_bytes);
+                  if ( net.get_amount() != 0 || cpu.get_amount() != 0 ) {
+                     action delegate = create_delegate( creator, account_name, net, cpu, transfer);
+                     send_actions( { create, buyram, delegate } );
+                  } else {
+                     send_actions( { create, buyram } );
+                  }
                }
-            } else {
-               send_actions( { create } );
+               else
+               {
+                  if ( net.get_amount() != 0 || cpu.get_amount() != 0 ) {
+                     action delegate = create_delegate( creator, account_name, net, cpu, transfer);
+                     send_actions( { create, delegate } );
+                  } else {
+                     send_actions( { create } );
+                  }
+               }
             }
+            else {
+               send_actions( { create } );
+            }      
+
       });
    }
 };
@@ -1094,7 +1109,7 @@ struct set_config_subcommand {
             config_asset = "0.0000 ACT";
          const asset asset_info = to_asset(config_asset);
          fc::variant schedulesize_var = fc::mutable_variant_object()
-                  ("name", config_name)
+                  ("cfg_name", config_name)
                   ("value", config_value)
                   ("valid_block", block_num)
                   ("key", config_key)
@@ -1146,9 +1161,9 @@ struct vote_producer_subcommand {
    string voter_str;
    eosio::name producer_name;
    string votes_str;
-
+   
    vote_producer_subcommand(CLI::App* actionRoot) {
-      auto vote_producer = actionRoot->add_subcommand("prods", localized("Vote for one producer"));
+      auto vote_producer = actionRoot->add_subcommand("prods", localized("Vote for one or more producers"));
       vote_producer->add_option("voter", voter_str, localized("The voting account"))->required();
       vote_producer->add_option("producer", producer_name, localized("The account to vote for."))->required();
 	  vote_producer->add_option("votes", votes_str, localized("The votes to vote, i.e.\"100.0000 ACT\"."))->required();
@@ -1288,9 +1303,49 @@ struct get_transaction_id_subcommand {
 
       get_transaction_id->set_callback([&] {
          try {
-            auto trx_var = json_from_file_or_string(trx_to_check);
+            fc::variant trx_var = json_from_file_or_string(trx_to_check);
+            if( trx_var.is_object() ) {
+               fc::variant_object& vo = trx_var.get_object();
+               if( vo.contains("actions") ) {
+                  if( vo["actions"].is_array() ) {
+                     fc::mutable_variant_object mvo = vo;
+                     fc::variants& action_variants = mvo["actions"].get_array();
+                     for( auto& action_v : action_variants ) {
+                        if( !action_v.is_object() ) {
+                           std::cerr << "Empty 'action' in transaction" << endl;
+                           return;
+                        }
+                        fc::variant_object& action_vo = action_v.get_object();
+                        if( action_vo.contains( "data" ) && action_vo.contains( "hex_data" ) ) {
+                           fc::mutable_variant_object maction_vo = action_vo;
+                           maction_vo["data"] = maction_vo["hex_data"];
+                           action_vo = maction_vo;
+                           vo = mvo;
+                        } else if( action_vo.contains( "data" ) ) {
+                           if( !action_vo["data"].is_string() ) {
+                              std::cerr << "get transaction_id only supports un-exploded 'data' (hex form)" << std::endl;
+                              return;
+                           }
+                        }
+                     }
+                  } else {
+                     std::cerr << "transaction json 'actions' is not an array" << std::endl;
+                     return;
+                  }
+               } else {
+                  std::cerr << "transaction json does not include 'actions'" << std::endl;
+                  return;
+               }
             auto trx = trx_var.as<transaction>();
-            std::cout << string(trx.id()) << std::endl;
+               transaction_id_type id = trx.id();
+               if( id == transaction().id() ) {
+                  std::cerr << "file/string does not represent a transaction" << std::endl;
+               } else {
+                  std::cout << string( id ) << std::endl;
+               }
+            } else {
+               std::cerr << "file/string does not represent a transaction" << std::endl;
+            }
          } EOS_RETHROW_EXCEPTIONS(transaction_type_exception, "Fail to parse transaction JSON '${data}'", ("data",trx_to_check))
       });
    }
@@ -2189,23 +2244,20 @@ void get_account( const string& accountName, const string& coresym, bool json_fo
 
       if ( res.voter_info.is_object() ) {
          auto& obj = res.voter_info.get_object();
-         string proxy = obj["proxy"].as_string();
-         if ( proxy.empty() ) {
-            auto& prods = obj["producers"].get_array();
+         auto prods = fc::variant(obj["producers"]).as<std::map<name, int64_t>>();
          std::cout << "producers:";
          if ( !prods.empty() ) {
-               for ( size_t i = 0; i < prods.size(); ++i ) {
+            uint32_t i = 0;
+            for ( auto& x : prods ) {
                if ( i%3 == 0 ) {
                   std::cout << std::endl << indent;
                }
-               std::cout << std::setw(16) << std::left << prods[i].as_string();
+               std::cout << std::setw(16) << std::left << x.first.to_string();
+               i++;
             }
             std::cout << std::endl;
          } else {
             std::cout << indent << "<not voted>" << std::endl;
-            }
-         } else {
-            std::cout << "proxy:" << indent << proxy << std::endl;
          }
       }
       std::cout << std::endl;
@@ -3790,7 +3842,7 @@ int main( int argc, char** argv ) {
 
    auto voteProducer = system->add_subcommand("voteproducer", localized("Vote for a producer"));
    voteProducer->require_subcommand();
-   auto voteProducers = vote_producer_subcommand(voteProducer);
+   auto voteproducer = vote_producer_subcommand(voteProducer);
 
    auto listProducers = list_producers_subcommand(system);
 
